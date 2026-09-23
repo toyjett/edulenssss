@@ -1,12 +1,63 @@
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:go_router/go_router.dart';
+import 'package:fl_chart/fl_chart.dart';
 import '../../app/theme/app_colors.dart';
 import '../../app/theme/app_text_styles.dart';
 import '../../shared/widgets/cards/app_card.dart';
 import '../../shared/widgets/charts/analytics_chart.dart';
-import 'package:fl_chart/fl_chart.dart';
+import '../../shared/widgets/buttons/app_button.dart';
+import '../../app/routes.dart';
+import '../../core/services/auth_service.dart';
+import '../../core/services/academic_service.dart';
+import '../../core/models/section_model.dart';
 
-class TeacherDashboardScreen extends StatelessWidget {
+class TeacherDashboardScreen extends StatefulWidget {
   const TeacherDashboardScreen({super.key});
+
+  @override
+  State<TeacherDashboardScreen> createState() => _TeacherDashboardScreenState();
+}
+
+class _TeacherDashboardScreenState extends State<TeacherDashboardScreen> {
+  List<SectionModel> _recentSections = [];
+  bool _isLoadingData = true;
+  int _totalStudents = 0;
+  int _activeSectionsCount = 0;
+  int _pendingResultsCount = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadDashboardData();
+  }
+
+  Future<void> _loadDashboardData() async {
+    final authService = context.read<AuthService>();
+    final academicService = context.read<AcademicService>();
+    
+    if (authService.currentUser != null) {
+      final teacherId = authService.currentUser!.id;
+      
+      // Fetch data in parallel
+      final results = await Future.wait([
+        academicService.fetchRecentSections(teacherId),
+        academicService.fetchTeacherDashboardStats(teacherId),
+      ]);
+
+      if (mounted) {
+        setState(() {
+          _recentSections = results[0] as List<SectionModel>;
+          final stats = results[1] as Map<String, dynamic>;
+          _totalStudents = stats['students'] as int;
+          _activeSectionsCount = stats['sections'] as int;
+          _pendingResultsCount = stats['pending'] as int;
+          _isLoadingData = false;
+        });
+      }
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -14,49 +65,356 @@ class TeacherDashboardScreen extends StatelessWidget {
 
     return Scaffold(
       backgroundColor: isDark ? AppColors.darkBackground : AppColors.lightBackground,
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(32.0),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            _buildHeader(isDark),
-            const SizedBox(height: 40),
-            _buildStatsGrid(isDark),
-            const SizedBox(height: 32),
-            _buildMainGrid(isDark),
-          ],
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          final horizontalPadding = constraints.maxWidth < 600 ? 16.0 : 32.0;
+          return SingleChildScrollView(
+            padding: EdgeInsets.symmetric(horizontal: horizontalPadding, vertical: 32.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _buildHeader(isDark),
+                const SizedBox(height: 32),
+                if (!kIsWeb) _buildQuickActions(context, isDark),
+                const SizedBox(height: 40),
+                Text(
+                  'Today\'s Classes', 
+                  style: AppTextStyles.h2.copyWith(color: isDark ? Colors.white : AppColors.deepPurple),
+                ),
+                const SizedBox(height: 16),
+                if (_isLoadingData)
+                  const Center(child: CircularProgressIndicator(color: AppColors.primaryPurple))
+                else if (_recentSections.isEmpty)
+                  _buildNoClassesState(isDark)
+                else
+                  ..._recentSections.map((section) => _buildClassItem(
+                    section.schedule,
+                    section.name, 
+                    section.subject, 
+                    section.room, 
+                    isDark, 
+                    context,
+                    section.id
+                  )),
+                if (kIsWeb) ...[
+                  const SizedBox(height: 40),
+                  _buildStatsGrid(isDark),
+                  const SizedBox(height: 32),
+                  _buildMainGrid(isDark),
+                ] else ...[
+                  const SizedBox(height: 40),
+                  _buildUpcomingAssessments(context, isDark),
+                  const SizedBox(height: 40),
+                  _buildQuickAnalyticsPreview(isDark),
+                ],
+              ],
+            ),
+          );
+        }
+      ),
+    );
+  }
+
+  Widget _buildNoClassesState(bool isDark) {
+    return AppCard(
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(40.0),
+          child: Column(
+            children: [
+              const Icon(Icons.calendar_today_outlined, color: AppColors.neutralGray, size: 32),
+              const SizedBox(height: 12),
+              const Text('No classes scheduled for today.', style: TextStyle(color: AppColors.neutralGray)),
+              TextButton(
+                onPressed: () => context.go(AppRoutes.teacherSections),
+                child: const Text('Go to My Sections'),
+              ),
+            ],
+          ),
         ),
       ),
     );
   }
 
   Widget _buildHeader(bool isDark) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-      children: [
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    return Consumer<AuthService>(
+      builder: (context, authService, child) {
+        final firstName = authService.currentUser?.firstName ?? 'Teacher';
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
-            Text(
-              'Hello, Teacher Rosel!', 
-              style: AppTextStyles.h1.copyWith(color: isDark ? Colors.white : AppColors.deepPurple),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Mabuhay, $firstName!',
+                    style: AppTextStyles.h1.copyWith(
+                      color: isDark ? Colors.white : AppColors.deepPurple,
+                      fontSize: firstName.length > 10 ? 24 : 32,
+                    ),
+                    overflow: TextOverflow.visible,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    kIsWeb ? 'Overview of your classroom performance' : 'Your Classroom Companion',
+                    style: AppTextStyles.subtitle1.copyWith(color: isDark ? Colors.white70 : AppColors.neutralGray),
+                  ),
+                ],
+              ),
             ),
-            const SizedBox(height: 4),
-            Text(
-              'Here is what\'s happening in your Filipino classes today.',
-              style: AppTextStyles.subtitle1.copyWith(color: isDark ? Colors.white70 : AppColors.neutralGray),
+            if (kIsWeb) ...[
+              const SizedBox(width: 16),
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  IconButton(
+                    icon: Icon(Icons.search, color: isDark ? Colors.white70 : AppColors.neutralGray),
+                    onPressed: () {},
+                  ),
+                  const SizedBox(width: 8),
+                  _buildNotificationBadge(isDark),
+                ],
+              ),
+            ],
+          ],
+        );
+      },
+    );
+  }
+
+  Widget _buildQuickActions(BuildContext context, bool isDark) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final cardWidth = (constraints.maxWidth - 24) / 3;
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _buildActionCard(
+              'Attendance', 
+              Icons.how_to_reg_rounded, 
+              () => context.go(AppRoutes.teacherAttendance),
+              isDark,
+              cardWidth,
+            ),
+            _buildActionCard(
+              'Scan Quiz', 
+              Icons.qr_code_scanner_rounded, 
+              () => context.push(AppRoutes.teacherScanner), 
+              isDark,
+              cardWidth,
+            ),
+            _buildActionCard(
+              'Analytics', 
+              Icons.analytics_rounded, 
+              () => context.push(AppRoutes.teacherAnalytics),
+              isDark,
+              cardWidth,
+            ),
+          ],
+        );
+      }
+    );
+  }
+
+  Widget _buildActionCard(String title, IconData icon, VoidCallback onTap, bool isDark, double width) {
+    return AppCard(
+      interactive: true,
+      onTap: onTap,
+      width: width,
+      height: 90,
+      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 4),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, color: AppColors.primaryPurple, size: 24),
+          const SizedBox(height: 8),
+          Text(
+            title, 
+            textAlign: TextAlign.center,
+            maxLines: 2,
+            overflow: TextOverflow.visible,
+            style: const TextStyle(
+              fontWeight: FontWeight.bold, 
+              fontSize: 10, 
+              color: AppColors.primaryPurple,
+              height: 1.1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildClassItem(String time, String section, String subject, String room, bool isDark, BuildContext context, String sectionId) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12.0),
+      child: AppCard(
+        interactive: true,
+        onTap: () => context.push(AppRoutes.teacherSectionDetails(sectionId)),
+        child: Row(
+          children: [
+            Container(
+              width: 100,
+              padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+              decoration: BoxDecoration(
+                color: AppColors.primaryPurple.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                time,
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primaryPurple, fontSize: 11),
+              ),
+            ),
+            const SizedBox(width: 16),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    section, 
+                    style: TextStyle(
+                      fontWeight: FontWeight.bold,
+                      color: isDark ? Colors.white : AppColors.deepPurple,
+                    ),
+                  ),
+                  Text(
+                    '$subject • $room', 
+                    style: TextStyle(color: isDark ? Colors.white60 : AppColors.neutralGray, fontSize: 12),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(Icons.chevron_right, color: AppColors.neutralGray, size: 18),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildUpcomingAssessments(BuildContext context, bool isDark) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Expanded(
+              child: Text(
+                'Upcoming Assessments', 
+                style: AppTextStyles.h2.copyWith(color: isDark ? Colors.white : AppColors.deepPurple),
+              ),
+            ),
+            const SizedBox(width: 8),
+            TextButton(
+              onPressed: () => context.go(AppRoutes.teacherAssessments),
+              child: const Text('View All'),
             ),
           ],
         ),
-        Row(
-          children: [
-            IconButton(
-              icon: Icon(Icons.search, color: isDark ? Colors.white70 : AppColors.neutralGray),
-              onPressed: () {},
-            ),
-            const SizedBox(width: 8),
-            _buildNotificationBadge(isDark),
-          ],
+        const SizedBox(height: 16),
+        _buildAssessmentSummaryCard(context, 'Real-time Check', 'All Sections', 'Syncing...', isDark),
+      ],
+    );
+  }
+
+  Widget _buildAssessmentSummaryCard(BuildContext context, String title, String section, String time, bool isDark) {
+    return AppCard(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Expanded(
+                child: Text(
+                  title, 
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+              const Icon(Icons.timer_outlined, size: 16, color: AppColors.warning),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text(
+            '$section • $time', 
+            style: const TextStyle(color: AppColors.neutralGray, fontSize: 13),
+          ),
+          const SizedBox(height: 16),
+          LayoutBuilder(
+            builder: (context, btnConstraints) {
+              return Row(
+                children: [
+                  Expanded(
+                    child: AppButton(
+                      text: 'Details',
+                      type: AppButtonType.primary,
+                      height: 36,
+                      onPressed: () => context.go(AppRoutes.teacherAssessments),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: AppButton(
+                      text: 'Scanner',
+                      type: AppButtonType.outline,
+                      height: 36,
+                      onPressed: () => context.push(AppRoutes.teacherScanner),
+                    ),
+                  ),
+                ],
+              );
+            }
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuickAnalyticsPreview(bool isDark) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Quick Analytics', 
+          style: AppTextStyles.h2.copyWith(color: isDark ? Colors.white : AppColors.deepPurple),
+        ),
+        const SizedBox(height: 16),
+        AppCard(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  const Icon(Icons.psychology_outlined, color: AppColors.primaryPurple, size: 20),
+                  const SizedBox(width: 8),
+                  const Expanded(
+                    child: Text(
+                      'Performance Insights', 
+                      style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Monitor real-time progress and identify students needing support based on live data.',
+                style: TextStyle(color: AppColors.neutralGray, fontSize: 13),
+              ),
+              const SizedBox(height: 20),
+              LinearProgressIndicator(
+                value: 0.85,
+                backgroundColor: AppColors.primaryPurple.withOpacity(0.1),
+                valueColor: const AlwaysStoppedAnimation<Color>(AppColors.success),
+              ),
+            ],
+          ),
         ),
       ],
     );
@@ -67,7 +425,7 @@ class TeacherDashboardScreen extends StatelessWidget {
       children: [
         IconButton(
           icon: Icon(
-            Icons.notifications_none_rounded, 
+            Icons.notifications_none_rounded,
             color: isDark ? Colors.white70 : AppColors.neutralGray,
           ),
           onPressed: () {},
@@ -97,10 +455,10 @@ class TeacherDashboardScreen extends StatelessWidget {
           mainAxisSpacing: 24,
           childAspectRatio: 2.2,
           children: [
-            _buildStatCard('Total Students', '90', Icons.people_outline, AppColors.primaryPurple, isDark),
-            _buildStatCard('Active Sections', '3', Icons.grid_view_rounded, AppColors.accentPurple, isDark),
-            _buildStatCard('Today\'s Classes', '3', Icons.schedule_rounded, AppColors.success, isDark),
-            _buildStatCard('Pending Grades', '15', Icons.pending_actions_rounded, AppColors.warning, isDark),
+            _buildStatCard('Total Students', '$_totalStudents', Icons.people_outline_rounded, AppColors.primaryPurple, isDark),
+            _buildStatCard('Active Sections', '$_activeSectionsCount', Icons.grid_view_rounded, AppColors.accentPurple, isDark),
+            _buildStatCard('Today\'s Classes', '${_recentSections.length}', Icons.schedule_rounded, AppColors.success, isDark),
+            _buildStatCard('Pending Results', '$_pendingResultsCount', Icons.pending_actions_rounded, AppColors.warning, isDark),
           ],
         );
       },
@@ -127,12 +485,12 @@ class TeacherDashboardScreen extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
                 Text(
-                  title, 
+                  title,
                   style: TextStyle(color: isDark ? Colors.white60 : AppColors.neutralGray, fontSize: 13),
                   overflow: TextOverflow.ellipsis,
                 ),
                 Text(
-                  value, 
+                  value,
                   style: AppTextStyles.h2.copyWith(color: isDark ? Colors.white : AppColors.deepPurple),
                 ),
               ],
@@ -173,43 +531,43 @@ class TeacherDashboardScreen extends StatelessWidget {
       children: [
         AnalyticsChartContainer(
           title: 'Section Performance',
-          subtitle: 'Average scores across your Filipino sections',
-          chart: BarChart(
-            BarChartData(
-              alignment: BarChartAlignment.spaceAround,
-              maxY: 100,
-              barGroups: [
-                _buildBarGroup(0, 84, AppColors.primaryPurple, isDark),
-                _buildBarGroup(1, 72, AppColors.accentPurple, isDark),
-                _buildBarGroup(2, 88, AppColors.primaryPurple, isDark),
-              ],
-              titlesData: FlTitlesData(
-                leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                bottomTitles: AxisTitles(
-                  sideTitles: SideTitles(
-                    showTitles: true,
-                    getTitlesWidget: (value, meta) {
-                      final style = TextStyle(
-                        color: isDark ? Colors.white70 : AppColors.deepPurple,
-                        fontSize: 10,
-                        fontWeight: FontWeight.bold,
-                      );
-                      switch (value.toInt()) {
-                        case 0: return Text('Section 1', style: style);
-                        case 1: return Text('Section 2', style: style);
-                        case 2: return Text('Section 3', style: style);
-                        default: return const Text('');
-                      }
-                    },
+          subtitle: 'Average scores across your active sections',
+          chart: _recentSections.isEmpty 
+            ? const Center(child: Text('No performance data available.', style: TextStyle(color: AppColors.neutralGray)))
+            : BarChart(
+                BarChartData(
+                  alignment: BarChartAlignment.spaceAround,
+                  maxY: 100,
+                  barGroups: _recentSections.asMap().entries.map((e) {
+                    return _buildBarGroup(e.key, e.value.averagePerformance > 0 ? e.value.averagePerformance : 75, AppColors.primaryPurple, isDark);
+                  }).toList(),
+                  titlesData: FlTitlesData(
+                    leftTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    bottomTitles: AxisTitles(
+                      sideTitles: SideTitles(
+                        showTitles: true,
+                        getTitlesWidget: (value, meta) {
+                          final style = TextStyle(
+                            color: isDark ? Colors.white70 : AppColors.deepPurple,
+                            fontSize: 10,
+                            fontWeight: FontWeight.bold,
+                          );
+                          final index = value.toInt();
+                          if (index < 0 || index >= _recentSections.length) return const Text('');
+                          return Padding(
+                            padding: const EdgeInsets.only(top: 8.0),
+                            child: Text(_recentSections[index].name, style: style, overflow: TextOverflow.ellipsis),
+                          );
+                        },
+                      ),
+                    ),
+                    topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
+                    rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
                   ),
+                  gridData: const FlGridData(show: false),
+                  borderData: FlBorderData(show: false),
                 ),
-                topTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
-                rightTitles: const AxisTitles(sideTitles: SideTitles(showTitles: false)),
               ),
-              gridData: const FlGridData(show: false),
-              borderData: FlBorderData(show: false),
-            ),
-          ),
         ),
         const SizedBox(height: 24),
         AppCard(
@@ -220,28 +578,19 @@ class TeacherDashboardScreen extends StatelessWidget {
                 children: [
                   const Icon(Icons.psychology_outlined, color: AppColors.primaryPurple),
                   const SizedBox(width: 8),
-                  Text(
-                    'Instructional Insights', 
-                    style: AppTextStyles.h3.copyWith(color: isDark ? Colors.white : AppColors.deepPurple),
+                  Expanded(
+                    child: Text(
+                      'Live Performance Alerts',
+                      style: AppTextStyles.h3.copyWith(color: isDark ? Colors.white : AppColors.deepPurple),
+                      overflow: TextOverflow.ellipsis,
+                    ),
                   ),
                 ],
               ),
               const SizedBox(height: 24),
               _buildAttentionItem(
-                'Possible Learning Gap in "Pagbasa"',
-                'Section 2 shows a 15% lower average than other sections.',
-                AppColors.error,
-                isDark,
-              ),
-              _buildAttentionItem(
-                'Performance Trend: Missing Submissions',
-                '5 students have not submitted the recent Written Work #1.',
-                AppColors.warning,
-                isDark,
-              ),
-              _buildAttentionItem(
-                'Performance Trend: Improving',
-                'Section 3 average score increased by 8% this week.',
+                'Data Sync Complete',
+                'All sections are currently performing within expected parameters.',
                 AppColors.success,
                 isDark,
               ),
@@ -259,8 +608,8 @@ class TeacherDashboardScreen extends StatelessWidget {
         BarChartRodData(
           toY: y,
           color: color,
-          width: 32,
-          borderRadius: const BorderRadius.vertical(top: Radius.circular(8)),
+          width: 24, 
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(6)),
           backDrawRodData: BackgroundBarChartRodData(
             show: true,
             toY: 100,
@@ -288,16 +637,16 @@ class TeacherDashboardScreen extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  title, 
+                  title,
                   style: TextStyle(
-                    fontWeight: FontWeight.w600, 
+                    fontWeight: FontWeight.w600,
                     fontSize: 14,
                     color: isDark ? Colors.white : AppColors.deepPurple,
                   ),
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  description, 
+                  description,
                   style: TextStyle(color: isDark ? Colors.white70 : AppColors.neutralGray, fontSize: 12),
                 ),
               ],
@@ -319,19 +668,29 @@ class TeacherDashboardScreen extends StatelessWidget {
                 mainAxisAlignment: MainAxisAlignment.spaceBetween,
                 children: [
                   Text(
-                    'Today\'s Classes', 
+                    'Active Groups',
                     style: AppTextStyles.h3.copyWith(color: isDark ? Colors.white : AppColors.deepPurple),
                   ),
                   TextButton(
-                    onPressed: () {}, 
+                    onPressed: () => context.go(AppRoutes.teacherSections),
                     child: const Text('View All', style: TextStyle(fontWeight: FontWeight.bold)),
                   ),
                 ],
               ),
               const SizedBox(height: 16),
-              _buildClassItem('7:30 AM', 'Section 1', 'Filipino', 'Room 301', isDark),
-              _buildClassItem('9:00 AM', 'Section 2', 'Filipino', 'Room 302', isDark),
-              _buildClassItem('10:30 AM', 'Section 3', 'Filipino', 'Room 303', isDark),
+              if (_recentSections.isEmpty)
+                const Text('No active sections found.', style: TextStyle(color: AppColors.neutralGray, fontSize: 12))
+              else
+                ..._recentSections.take(2).map((s) => Padding(
+                  padding: const EdgeInsets.only(bottom: 8.0),
+                  child: ListTile(
+                    dense: true,
+                    title: Text(s.name, style: const TextStyle(fontWeight: FontWeight.bold)),
+                    subtitle: Text(s.subject),
+                    trailing: const Icon(Icons.arrow_forward_ios, size: 12),
+                    onTap: () => context.push(AppRoutes.teacherSectionDetails(s.id)),
+                  ),
+                )),
             ],
           ),
         ),
@@ -354,7 +713,7 @@ class TeacherDashboardScreen extends StatelessWidget {
               ),
               const SizedBox(height: 20),
               ElevatedButton(
-                onPressed: () {},
+                onPressed: () => context.push(AppRoutes.teacherLessonPlan),
                 style: ElevatedButton.styleFrom(
                   backgroundColor: Colors.white,
                   foregroundColor: AppColors.primaryPurple,
@@ -366,48 +725,6 @@ class TeacherDashboardScreen extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-
-  Widget _buildClassItem(String time, String section, String subject, String room, bool isDark) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 12.0),
-      child: Row(
-        children: [
-          Container(
-            width: 70,
-            padding: const EdgeInsets.symmetric(vertical: 8),
-            decoration: BoxDecoration(
-              color: AppColors.primaryPurple.withValues(alpha: 0.1),
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Text(
-              time,
-              textAlign: TextAlign.center,
-              style: const TextStyle(fontWeight: FontWeight.bold, color: AppColors.primaryPurple, fontSize: 12),
-            ),
-          ),
-          const SizedBox(width: 16),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  section, 
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: isDark ? Colors.white : AppColors.deepPurple,
-                  ),
-                ),
-                Text(
-                  '$subject • $room', 
-                  style: TextStyle(color: isDark ? Colors.white60 : AppColors.neutralGray, fontSize: 12),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
     );
   }
 }
